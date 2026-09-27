@@ -85,6 +85,14 @@ class MainActivity : ComponentActivity() {
             lp.screenBrightness = 0.01f
             window.attributes = lp
 
+            // Ensure camera service is running while activity has foreground privileges (Android 14+ fix)
+            try {
+                CameraForegroundService.ensureServiceRunning(this)
+                CameraForegroundService.nudge()
+            } catch (t: Throwable) {
+                Log.w("Timelapse", "Failed to ensure camera service running from wakeup activity", t)
+            }
+
             lifecycleScope.launch {
                 delay(8000)
                 if (!isFinishing) {
@@ -93,7 +101,6 @@ class MainActivity : ComponentActivity() {
                     } catch (_: Throwable) {}
                     
                     // Restore default brightness when moving to the background
-                    // so that when the user opens the app manually later, it opens with normal brightness.
                     val lpRestore = window.attributes
                     lpRestore.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
                     window.attributes = lpRestore
