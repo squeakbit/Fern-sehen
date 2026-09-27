@@ -1,12 +1,21 @@
 package de.example.timelapse
-import android.annotation.SuppressLint
-import android.app.*
-import android.content.*
+
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
 import android.os.Build
-import android.os.Bundle
 import android.util.Log
-import java.util.*
-class AlarmScheduler(private val c:Context){
+import de.example.timelapse.worker.SmbUploadWorker
+import java.util.Calendar
+
+/**
+ * Manages exact scheduling using Android's [AlarmManager.setAlarmClock] API.
+ * The app is intentionally designed with alarm-clock level wake-ups so that
+ * deep Doze mode and aggressive OEM power saving (Android 9 to 16+) do NOT
+ * suspend or delay periodic timelapse captures or daily uploads.
+ */
+class AlarmScheduler(private val c: Context) {
     companion object {
         const val UPLOAD = "de.example.timelapse.UPLOAD"
         const val CAPTURE = "de.example.timelapse.CAPTURE"
@@ -15,14 +24,16 @@ class AlarmScheduler(private val c:Context){
     }
     private val am = c.getSystemService(AlarmManager::class.java)
 
-    // Daily upload and interval capture nudges.
     fun scheduleAll() {
         val s = SettingsManager(c)
-        if (s.smbUploadEnabled) scheduleUpload() else cancel(UPLOAD, RU)
-        if (s.timelapseEnabled) scheduleNextCapture() else cancel(CAPTURE, RC)
+        if (s.smbUploadEnabled) scheduleUpload() else cancelUpload()
+        if (s.timelapseEnabled) scheduleNextCapture() else cancelCapture()
     }
 
-    // Upload is scheduled daily at a fixed time only.
+    /**
+     * Daily SMB upload scheduled at fixed time via [AlarmManager.setAlarmClock]
+     * to guarantee exact execution even out of deep sleep, with WorkManager as secondary fallback.
+     */
     fun scheduleUpload() {
         val s = SettingsManager(c)
         val cal = Calendar.getInstance().apply {
@@ -32,113 +43,69 @@ class AlarmScheduler(private val c:Context){
             set(Calendar.MILLISECOND, 0)
             if (timeInMillis <= System.currentTimeMillis()) add(Calendar.DAY_OF_YEAR, 1)
         }
-        schedule(UPLOAD, RU, cal.timeInMillis)
+        scheduleAlarmClock(UPLOAD, RU, cal.timeInMillis)
+        SmbUploadWorker.schedule(c)
+    }
+
+    fun cancelUpload() {
+        SmbUploadWorker.cancel(c)
+        am.cancel(pending(UPLOAD, RU))
+    }
+
+    fun cancelCapture() {
+        am.cancel(pending(CAPTURE, RC))
     }
 
     /**
-     * Schedules a "nudge" alarm for the next capture. This is NOT the primary
-     * timing source (the service's internal loop is, to avoid Android 14+
-     * background-start restrictions), but it ensures the device actually
-     * wakes up from deep sleep (Doze) so the loop can continue running.
+     * Schedules an exact "Alarm Clock" nudge alarm for the next capture.
+     * Uses [AlarmManager.AlarmClockInfo] to guarantee device wake-up from Doze mode on Android 9-16+.
      */
     fun scheduleNextCapture() {
         val s = SettingsManager(c)
         val waitMs = TimeWindowUtils.msUntilNextCapture(s)
-        
-        // Add a tiny 500ms offset to ensure we land AFTER the interval
-        // boundary, preventing "just missed it" double-fires.
-        schedule(CAPTURE, RC, System.currentTimeMillis() + waitMs + 500)
+        val at = System.currentTimeMillis() + waitMs + 500L
+        scheduleAlarmClock(CAPTURE, RC, at)
     }
 
-    private fun schedule(action: String, request: Int, at: Long) {
+    private fun scheduleAlarmClock(action: String, request: Int, at: Long) {
         val pi = pending(action, request)
-        // AlarmClock is the most reliable way to wake up from Doze on all
-        // API levels, bypasses most OEM-specific throttling, and is not
-        // affected by the "9 minute" interval limit of setAndAllowWhileIdle.
-        // The only downside is the alarm clock icon in the status bar.
-        try {
-            val intent = Intent(c, MainActivity::class.java)
-            val showIntent = if (Build.VERSION.SDK_INT >= 34) {
-                showIntentWithOptIn(intent)
-            } else {
-                PendingIntent.getActivity(c, 0, intent, PendingIntent.FLAG_IMMUTABLE)
-            }
-            val info = AlarmManager.AlarmClockInfo(at, showIntent)
-            am.setAlarmClock(info, pi)
-        } catch (e: SecurityException) {
-            Log.w("Timelapse", "exact alarm permission missing", e)
-        }
-    }
-    private fun cancel(a: String, r: Int) = am.cancel(pending(a, r))
-    private fun pending(a: String, r: Int): PendingIntent {
-        val intent = Intent(c, AlarmReceiver::class.java).setAction(a)
-        return if (Build.VERSION.SDK_INT >= 34) {
-            pendingWithOptIn(a, r)
+        val canExact = if (Build.VERSION.SDK_INT >= 31) {
+            am.canScheduleExactAlarms()
         } else {
-            PendingIntent.getBroadcast(c, r, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            true
+        }
+
+        try {
+            if (canExact) {
+                val intent = Intent(c, MainActivity::class.java)
+                val showIntent = PendingIntent.getActivity(
+                    c,
+                    0,
+                    intent,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+                val info = AlarmManager.AlarmClockInfo(at, showIntent)
+                am.setAlarmClock(info, pi)
+            } else {
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            }
+        } catch (e: SecurityException) {
+            Log.w("Timelapse", "SecurityException setting alarm clock, using fallback", e)
+            try {
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            } catch (t: Throwable) {
+                Log.e("Timelapse", "Failed to schedule fallback alarm", t)
+            }
         }
     }
 
-    @SuppressLint("NewApi")
-    private fun pendingWithOptIn(action: String, request: Int): PendingIntent {
+    private fun pending(action: String, request: Int): PendingIntent {
         val intent = Intent(c, AlarmReceiver::class.java).setAction(action)
-        return try {
-            val options = ActivityOptions.makeBasic().apply {
-                setPendingIntentCreatorBackgroundActivityStartMode(
-                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
-                )
-            }.toBundle()
-            
-            val method = PendingIntent::class.java.getMethod(
-                "getBroadcast",
-                Context::class.java,
-                Int::class.javaPrimitiveType,
-                Intent::class.java,
-                Int::class.javaPrimitiveType,
-                Bundle::class.java
-            )
-            method.invoke(
-                null,
-                c,
-                request,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                options
-            ) as PendingIntent
-        } catch (t: Throwable) {
-            Log.w("Timelapse", "Failed to invoke getBroadcast with background activity start mode", t)
-            PendingIntent.getBroadcast(c, request, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        }
-    }
-
-    @SuppressLint("NewApi")
-    private fun showIntentWithOptIn(intent: Intent): PendingIntent {
-        return try {
-            val options = ActivityOptions.makeBasic().apply {
-                setPendingIntentCreatorBackgroundActivityStartMode(
-                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
-                )
-            }.toBundle()
-            
-            val method = PendingIntent::class.java.getMethod(
-                "getActivity",
-                Context::class.java,
-                Int::class.javaPrimitiveType,
-                Intent::class.java,
-                Int::class.javaPrimitiveType,
-                Bundle::class.java
-            )
-            method.invoke(
-                null,
-                c,
-                0,
-                intent,
-                PendingIntent.FLAG_IMMUTABLE,
-                options
-            ) as PendingIntent
-        } catch (t: Throwable) {
-            Log.w("Timelapse", "Failed to invoke getActivity with background activity start mode", t)
-            PendingIntent.getActivity(c, 0, intent, PendingIntent.FLAG_IMMUTABLE)
-        }
+        return PendingIntent.getBroadcast(
+            c,
+            request,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 }

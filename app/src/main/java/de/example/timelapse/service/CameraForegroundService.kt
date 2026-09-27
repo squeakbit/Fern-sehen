@@ -131,21 +131,10 @@ class CameraForegroundService : Service() {
     private fun startMqttListenerIfNeeded() {
         if (mqttJob?.isActive == true) return
         mqttJob = scope.launch {
-            var lastStatePublish = 0L
-            while (isActive) {
-                try {
-                    val mqtt = MqttClientManager(this@CameraForegroundService)
-                    mqtt.handleMqttCommands()
-
-                    val now = System.currentTimeMillis()
-                    if (now - lastStatePublish >= 60_000L) {
-                        lastStatePublish = now
-                        val s = SettingsManager(this@CameraForegroundService)
-                        MqttDiscovery(mqtt, s, this@CameraForegroundService).publishState()
-                    }
-                } catch (_: Throwable) {}
-                delay(30_000) // Keep-alive/reconnect check
-            }
+            try {
+                val mqtt = MqttClientManager(this@CameraForegroundService)
+                mqtt.handleMqttCommands()
+            } catch (_: Throwable) {}
         }
     }
 
