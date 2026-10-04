@@ -6,17 +6,23 @@ import android.app.*
 import android.content.*
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.*
 import android.util.Log
 import androidx.core.content.ContextCompat
 import de.example.timelapse.*
+import de.example.timelapse.camera.CameraRepository
 import de.example.timelapse.camera.PhotoCaptureHelper
+import de.example.timelapse.camera.StorageCleanupHelper
 import de.example.timelapse.mqtt.MqttClientManager
 import de.example.timelapse.mqtt.MqttDiscovery
+import de.example.timelapse.network.NetworkMonitor
 import de.example.timelapse.smb.SmbUploader
 import java.time.Instant
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import java.util.Calendar
+import java.util.Locale
 
 
 /**
@@ -38,6 +44,10 @@ class CameraForegroundService : Service() {
 
         fun nudge() {
             instance?.nudgeChannel?.trySend(Unit)
+        }
+
+        fun triggerDailyUpload() {
+            instance?.triggerDailyUploadInternal()
         }
 
         /**
@@ -68,12 +78,16 @@ class CameraForegroundService : Service() {
             key == "window_end_hour" || key == "window_end_minute" || key == "window_offset_seconds" ||
             key == "smb_upload_enabled" || key == "smb_upload_hour" || key == "smb_upload_minute") {
             nudgeChannel.trySend(Unit)
+
+            if (key == "manual_upload_requested") {
+                triggerManualUploadIfNeeded()
+            }
             
             // Sync state to MQTT immediately
             if (key == "timelapse_enabled" || key == "time_window_enabled" || key == "window_start_hour" || 
                 key == "window_start_minute" || key == "window_end_hour" || key == "window_end_minute" ||
                 key == "capture_interval_minutes" || key == "smb_upload_enabled" || key == "smb_upload_hour" ||
-                key == "smb_upload_minute") {
+                key == "smb_upload_minute" || key == "manual_upload_requested") {
                 scope.launch {
                     try {
                         val s = SettingsManager(this@CameraForegroundService)
@@ -103,6 +117,18 @@ class CameraForegroundService : Service() {
         
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         prefs.registerOnSharedPreferenceChangeListener(prefListener)
+
+        val networkMonitor = NetworkMonitor.getInstance(this)
+        scope.launch {
+            networkMonitor.isOnline.collect { online ->
+                if (online) {
+                    Log.i("Timelapse", "Network restored: resetting MQTT cooldown and restarting listener")
+                    MqttClientManager.resetCooldown()
+                    startMqttListenerIfNeeded()
+                    triggerManualUploadIfNeeded()
+                }
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -121,6 +147,7 @@ class CameraForegroundService : Service() {
             else -> {
                 startLoopIfNeeded()
                 startMqttListenerIfNeeded()
+                triggerManualUploadIfNeeded()
                 nudgeChannel.trySend(Unit)
             }
         }
@@ -138,6 +165,133 @@ class CameraForegroundService : Service() {
         }
     }
 
+    private var manualUploadJob: Job? = null
+    private fun triggerManualUploadIfNeeded() {
+        val s = SettingsManager(this@CameraForegroundService)
+        if (!s.manualUploadRequested) return
+        if (manualUploadJob?.isActive == true) return
+
+        if (!NetworkMonitor.getInstance(this).isCurrentlyOnline()) {
+            Log.w("Timelapse", "Skipping manual upload: network is offline")
+            return
+        }
+
+        manualUploadJob = scope.launch {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            val uploadLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Timelapse:ManualUpload")
+            if (!uploadLock.isHeld) {
+                try { uploadLock.acquire(10 * 60_000L) } catch (_: Throwable) {}
+            }
+
+            val wm = applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
+            @Suppress("DEPRECATION")
+            val wifiLock = try {
+                wm?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Timelapse:ManualUploadWifi")?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            } catch (_: Throwable) { null }
+
+            try {
+                val mqtt = MqttClientManager(this@CameraForegroundService)
+                mqtt.publish("timelapse/${s.deviceId}/upload/state", "ON")
+                MqttDiscovery(mqtt, s, this@CameraForegroundService).publishState()
+
+                val result = withTimeoutOrNull(3 * 60_000L) {
+                    SmbUploader(this@CameraForegroundService).uploadPendingPhotos()
+                }
+
+                if (result != null) {
+                    if (result.uploaded > 0) {
+                        mqtt.publish("timelapse/${s.deviceId}/last_upload", Instant.now().toString())
+                    }
+                    mqtt.publish("timelapse/${s.deviceId}/last_upload_count", result.uploaded.toString())
+                    mqtt.publish("timelapse/${s.deviceId}/last_upload_failed", result.failed.toString())
+                    if (result.lastError != null) {
+                        mqtt.publish("timelapse/${s.deviceId}/last_error", result.lastError)
+                    }
+                } else {
+                    mqtt.publish("timelapse/${s.deviceId}/last_error", "Upload Zeitüberschreitung (SMB/WLAN keine Rückmeldung)")
+                }
+            } catch (t: Throwable) {
+                Log.e("Timelapse", "Manual upload failed", t)
+            } finally {
+                withContext(NonCancellable) {
+                    try {
+                        s.manualUploadRequested = false
+                        val mqtt = MqttClientManager(this@CameraForegroundService)
+                        mqtt.publish("timelapse/${s.deviceId}/upload/state", "OFF")
+                        MqttDiscovery(mqtt, s, this@CameraForegroundService).publishState()
+                    } catch (_: Throwable) {}
+                    if (uploadLock.isHeld) {
+                        try { uploadLock.release() } catch (_: Throwable) {}
+                    }
+                    wifiLock?.let {
+                        if (it.isHeld) {
+                            try { it.release() } catch (_: Throwable) {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var dailyUploadJob: Job? = null
+    fun triggerDailyUploadInternal() {
+        val s = SettingsManager(this@CameraForegroundService)
+        if (!s.smbUploadEnabled) return
+        if (dailyUploadJob?.isActive == true) return
+
+        if (!NetworkMonitor.getInstance(this).isCurrentlyOnline()) {
+            Log.w("Timelapse", "Skipping daily SMB upload: network is offline")
+            return
+        }
+
+        dailyUploadJob = scope.launch {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            val uploadLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Timelapse:DailyUpload")
+            if (!uploadLock.isHeld) {
+                try { uploadLock.acquire(15 * 60_000L) } catch (_: Throwable) {}
+            }
+
+            val wm = applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
+            @Suppress("DEPRECATION")
+            val wifiLock = try {
+                wm?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Timelapse:DailyUploadWifi")?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            } catch (_: Throwable) { null }
+
+            try {
+                val mqtt = MqttClientManager(this@CameraForegroundService)
+                val result = withTimeoutOrNull(10 * 60_000L) {
+                    SmbUploader(this@CameraForegroundService).uploadPendingPhotos()
+                }
+
+                if (result != null) {
+                    mqtt.publish("timelapse/${s.deviceId}/last_upload", Instant.now().toString())
+                    mqtt.publish("timelapse/${s.deviceId}/last_upload_count", result.uploaded.toString())
+                    mqtt.publish("timelapse/${s.deviceId}/last_upload_failed", result.failed.toString())
+                    if (result.lastError != null) {
+                        mqtt.publish("timelapse/${s.deviceId}/last_error", result.lastError)
+                    }
+                }
+                StorageCleanupHelper.cleanOldEmptyFolders(this@CameraForegroundService)
+                MqttDiscovery(mqtt, s, this@CameraForegroundService).publishState()
+            } catch (t: Throwable) {
+                Log.e("Timelapse", "Daily upload failed", t)
+            } finally {
+                withContext(NonCancellable) {
+                    if (uploadLock.isHeld) try { uploadLock.release() } catch (_: Throwable) {}
+                    wifiLock?.let { if (it.isHeld) try { it.release() } catch (_: Throwable) {} }
+                }
+            }
+        }
+    }
+
+    private var lastDailyUploadDate = ""
+
     private fun startLoopIfNeeded() {
         if (loopJob?.isActive == true) return
         loopJob = scope.launch {
@@ -148,20 +302,20 @@ class CameraForegroundService : Service() {
                 while (isActive) {
                     val s = SettingsManager(this@CameraForegroundService)
                     
-                    // Manual upload is now handled in startMqttListenerIfNeeded via callback,
-                    // but we still check it here in the loop just in case.
                     if (s.manualUploadRequested) {
-                        try {
-                            val mqtt = MqttClientManager(this@CameraForegroundService)
-                            val result = SmbUploader(this@CameraForegroundService).uploadPendingPhotos()
-                            if (result.uploaded > 0) {
-                                mqtt.publish("timelapse/${s.deviceId}/last_upload", Instant.now().toString())
-                            }
-                            s.manualUploadRequested = false
-                            mqtt.publish("timelapse/${s.deviceId}/upload/state", "OFF")
-                            MqttDiscovery(mqtt, s, this@CameraForegroundService).publishState()
-                        } catch (t: Throwable) {
-                            Log.e("Timelapse", "Loop manual upload failed", t)
+                        triggerManualUploadIfNeeded()
+                    }
+
+                    if (s.smbUploadEnabled) {
+                        val nowCal = Calendar.getInstance()
+                        val todayDate = String.format(
+                            Locale.US, "%04d-%02d-%02d",
+                            nowCal.get(Calendar.YEAR), nowCal.get(Calendar.MONTH) + 1, nowCal.get(Calendar.DAY_OF_MONTH))
+                        val currentHour = nowCal.get(Calendar.HOUR_OF_DAY)
+                        val currentMinute = nowCal.get(Calendar.MINUTE)
+                        if (currentHour == s.smbUploadHour && currentMinute == s.smbUploadMinute && lastDailyUploadDate != todayDate) {
+                            lastDailyUploadDate = todayDate
+                            triggerDailyUploadInternal()
                         }
                     }
 
@@ -185,12 +339,10 @@ class CameraForegroundService : Service() {
                             if (serviceLock.isHeld) try { serviceLock.release() } catch (_: Throwable) {}
                         }
                     } else {
-                        // Ensure wake-up alarm is set
-                        try { AlarmScheduler(this@CameraForegroundService).scheduleNextCapture() } catch (_: Throwable) {}
                         WakeLockHolder.release()
                         if (serviceLock.isHeld) try { serviceLock.release() } catch (_: Throwable) {}
                         
-                        withTimeoutOrNull(waitMs.coerceAtMost(MAX_SINGLE_SLEEP_MS)) {
+                        withTimeoutOrNull(waitMs) {
                             nudgeChannel.receive()
                         }
                     }
@@ -216,36 +368,46 @@ class CameraForegroundService : Service() {
         }
         
         try {
-            val cameras = PhotoCaptureHelper.resolveCameras(this, s)
-            if (cameras.isEmpty()) {
-                reportError("Keine passende Kamera gefunden")
-                return
-            }
-            
-            val failures = mutableListOf<String>()
-            for ((index, camera) in cameras.withIndex()) {
-                try {
-                    if (index > 0) delay(2000)
-                    val (w, h) = PhotoCaptureHelper.resolveResolution(s, camera.id)
-                    PhotoCaptureHelper.captureAndSave(this, camera.id, w, h, s.jpegQuality, PhotoCaptureHelper.cameraLabel(camera))
-                    
-                    // Notify MQTT immediately after each photo is saved
-                    try {
-                        val mqtt = MqttClientManager(this)
-                        MqttDiscovery(mqtt, s, this).publishState()
-                    } catch (_: Throwable) {}
-                    
-                } catch (t: Throwable) {
-                    Log.e("Timelapse", "capture failed for camera ${camera.id}", t)
-                    failures.add("${camera.id}: ${t.message ?: t.javaClass.simpleName}")
+            val captureResult = withTimeoutOrNull(45_000L) {
+                val cameras = PhotoCaptureHelper.resolveCameras(this@CameraForegroundService, s)
+                if (cameras.isEmpty()) {
+                    reportError("Keine passende Kamera gefunden")
+                    return@withTimeoutOrNull null
                 }
+                
+                var savedAny = false
+                val failures = mutableListOf<String>()
+                for ((index, camera) in cameras.withIndex()) {
+                    try {
+                        if (index > 0) delay(2000)
+                        val (w, h) = PhotoCaptureHelper.resolveResolution(s, camera.id)
+                        PhotoCaptureHelper.captureAndSave(this@CameraForegroundService, camera.id, w, h, s.jpegQuality, PhotoCaptureHelper.cameraLabel(camera))
+                        savedAny = true
+                    } catch (t: Throwable) {
+                        Log.e("Timelapse", "capture failed for camera ${camera.id}", t)
+                        failures.add("${camera.id}: ${t.message ?: t.javaClass.simpleName}")
+                    }
+                }
+                if (savedAny) {
+                    s.lastCaptureAt = System.currentTimeMillis()
+                }
+                failures
+            }
+
+            if (captureResult == null) {
+                s.lastCaptureAt = System.currentTimeMillis()
+                reportError("Aufnahme fehlgeschlagen: Zeitüberschreitung / Kamera-Schnittstelle antwortet nicht")
+                CameraRepository.clearCache()
+                return
             }
 
             // Consolidate MQTT calls
             try {
                 val mqtt = MqttClientManager(this)
-                if (failures.isNotEmpty()) {
-                    mqtt.publish("timelapse/${s.deviceId}/last_error", "Aufnahme fehlgeschlagen: " + failures.joinToString("; "))
+                if (captureResult.isNotEmpty()) {
+                    mqtt.publish("timelapse/${s.deviceId}/last_error", "Aufnahme fehlgeschlagen: " + captureResult.joinToString("; "))
+                } else {
+                    mqtt.publish("timelapse/${s.deviceId}/last_error", "")
                 }
                 MqttDiscovery(mqtt, s, this).publishState()
             } catch (t: Throwable) {

@@ -19,7 +19,7 @@ object WakeLockHolder {
         val pm = context.applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
         if (wakeLock == null) {
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Timelapse:AlarmWakeLock").apply {
-                setReferenceCounted(true)
+                setReferenceCounted(false)
             }
         }
         wakeLock?.let {
@@ -32,9 +32,11 @@ object WakeLockHolder {
     @Synchronized
     fun release() {
         wakeLock?.let {
-            if (it.isHeld) {
-                try { it.release() } catch (_: Throwable) {}
-            }
+            try {
+                while (it.isHeld) {
+                    it.release()
+                }
+            } catch (_: Throwable) {}
         }
     }
 }

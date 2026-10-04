@@ -34,7 +34,7 @@ object PhotoCaptureHelper {
         val targetAspect = rw.toFloat() / rh
 
         // Find a supported JPEG size that matches the aspect ratio of the final capture
-        val cameraInfo = CameraRepository(context).list().firstOrNull { it.id == cameraId }
+        val cameraInfo = CameraRepository.getCachedList(context).firstOrNull { it.id == cameraId }
         val previewSize = cameraInfo?.sizes?.filter {
             Math.abs((it.width.toFloat() / it.height) - targetAspect) < 0.05
         }?.reversed()?.firstOrNull { it.width >= 1024 || it.height >= 1024 }
@@ -78,7 +78,7 @@ object PhotoCaptureHelper {
      * when possible.
      */
     suspend fun cameraLabel(context: Context, cameraId: String): String {
-        val facing = CameraRepository(context).list().firstOrNull { it.id == cameraId }?.facing
+        val facing = CameraRepository.getCachedList(context).firstOrNull { it.id == cameraId }?.facing
         return "${facingCode(facing)}$cameraId"
     }
 
@@ -259,7 +259,7 @@ object PhotoCaptureHelper {
      * second time per camera.
      */
     suspend fun resolveCameras(context: Context, settings: SettingsManager): List<CameraInfo> {
-        val cameras = CameraRepository(context).list()
+        val cameras = CameraRepository.getCachedList(context)
         val selected = settings.selectedCameraIds
         val matched = cameras.filter { it.id in selected }
         return matched.ifEmpty { listOfNotNull(cameras.firstOrNull()) }

@@ -24,8 +24,8 @@ class SettingsManager(context: Context) {
         get() = p.getBoolean("timelapse_enabled", false)
         set(v) = p.edit().putBoolean("timelapse_enabled", v).apply()
     var captureIntervalMinutes: Int
-        get() = p.getInt("capture_interval_minutes", 5)
-        set(v) = p.edit().putInt("capture_interval_minutes", v.coerceIn(1, 1440)).apply()
+        get() = p.getInt("capture_interval_minutes", 10)
+        set(v) = p.edit().putInt("capture_interval_minutes", v.coerceIn(10, 1440)).apply()
     var lastPreviewCameraId: String
         get() = p.getString("last_preview_camera_id", "") ?: ""
         set(v) = p.edit().putString("last_preview_camera_id", v).apply()

@@ -202,7 +202,7 @@ object TimeWindowUtils {
 
         if (nowMs in effectiveStartMs until effectiveEndMs) {
             val intervalMs = s.captureIntervalMinutes * 60_000L
-            val nextIntervalTarget = if (s.lastCaptureAt == 0L) nowMs else s.lastCaptureAt + intervalMs
+            val nextIntervalTarget = if (s.lastCaptureAt < effectiveStartMs) nowMs else s.lastCaptureAt + intervalMs
             val targetMs = minOf(nextIntervalTarget, effectiveEndMs)
             return (targetMs - nowMs).coerceAtLeast(0L)
         } else if (nowMs < effectiveStartMs) {

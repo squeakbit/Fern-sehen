@@ -15,6 +15,9 @@ import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.*
 
+import com.hierynomus.smbj.SmbConfig
+import de.example.timelapse.network.NetworkMonitor
+import java.util.concurrent.TimeUnit
 import de.example.timelapse.ui.deleteLocalMediaFile
 import de.example.timelapse.ui.isUriReadable
 import de.example.timelapse.ui.openInputStreamForUri
@@ -23,7 +26,19 @@ import de.example.timelapse.ui.resolveValidPhotoUri
 data class UploadResult(val uploaded:Int, val failed:Int, val removed:Int=0, val lastError:String?=null)
 
 class SmbUploader(private val context:Context){
+ private fun createSmbClient(): SMBClient {
+  val config = SmbConfig.builder()
+   .withTimeout(15, TimeUnit.SECONDS)
+   .withSoTimeout(15, TimeUnit.SECONDS)
+   .build()
+  return SMBClient(config)
+ }
+
  suspend fun uploadPendingPhotos():UploadResult=withContext(Dispatchers.IO){
+  if (!NetworkMonitor.getInstance(context).isCurrentlyOnline()) {
+   Log.w("Timelapse", "Network offline: aborting SMB upload run")
+   return@withContext UploadResult(0, 0, 0, "Netzwerk offline")
+  }
   val s=SettingsManager(context); val dao=AppDatabase.getInstance(context).photoDao(); val pending=dao.getPendingPhotos()
   Log.i("Timelapse","upload run: ${pending.size} pending file(s) found")
   if(pending.isEmpty())return@withContext UploadResult(0,0,0)
@@ -32,7 +47,7 @@ class SmbUploader(private val context:Context){
   val pendingLabels = pending.map { it.fileName.substringBefore('_') }.filter { it.isNotBlank() }.distinct()
   val hasMultipleCameras = s.selectedCameraIds.size > 1 || cameraLabelsInDb.size > 1 || pendingLabels.size > 1
 
-  var u=0;var f=0;var r=0; var lastErr:String?=null; val client=SMBClient()
+  var u=0;var f=0;var r=0; var lastErr:String?=null; val client=createSmbClient()
   try{
    Log.d("Timelapse", "Connecting to ${s.smbHost}...")
    client.connect(s.smbHost).use{connection->
@@ -192,7 +207,7 @@ class SmbUploader(private val context:Context){
   val s = SettingsManager(context)
   if (s.smbHost.isBlank()) return@withContext Result.failure(IllegalStateException("SMB Server is empty"))
   if (s.smbShare.isBlank()) return@withContext Result.failure(IllegalStateException("SMB Share is empty"))
-  val client = SMBClient()
+  val client = createSmbClient()
   try {
    Log.d("Timelapse", "Test: Connecting to ${s.smbHost}...")
    client.connect(s.smbHost).use { connection ->

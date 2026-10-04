@@ -4,6 +4,7 @@ import android.os.BatteryManager
 import android.util.Log
 import de.example.timelapse.SettingsManager
 import de.example.timelapse.data.AppDatabase
+import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
 import java.util.Locale
@@ -12,7 +13,7 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
     private val base = "timelapse/${s.deviceId}"
 
     private fun device() = JSONObject().apply {
-        put("identifiers", org.json.JSONArray().put(s.deviceId))
+        put("identifiers", JSONArray().put(s.deviceId))
         put("name", s.deviceName)
         put("manufacturer", "Fern-Sehen")
         put("model", "Camera")
@@ -71,8 +72,7 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
         config("text", "window_end", JSONObject().apply {
             put("name", "${s.deviceName} Endzeit")
             put("unique_id", "${s.deviceId}_window_end")
-            put("command_topic", "$base/window_end/set")
-            put("state_topic", "$base/window_end/state")
+            put("command_topic", "$base/window_end/state")
             put("pattern", "^[0-2][0-9]:[0-5][0-9]$")
             put("mode", "text")
             put("icon", "mdi:clock-end")
@@ -91,17 +91,27 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
             put("device", device())
         })
         
-        // Manual Upload Trigger
-        config("switch", "manual_upload", JSONObject().apply {
+        // Remove legacy switch entity in HA
+        mqtt.publish("homeassistant/switch/${s.deviceId}_manual_upload/config", "", true)
+
+        // Manual Upload Trigger Button
+        config("button", "manual_upload", JSONObject().apply {
             put("name", "${s.deviceName} Manueller Upload")
             put("unique_id", "${s.deviceId}_manual_upload")
             put("command_topic", "$base/upload/set")
+            put("payload_press", "ON")
+            put("icon", "mdi:cloud-upload")
+            put("device", device())
+        })
+
+        // Upload Active Binary Sensor
+        config("binary_sensor", "upload_active", JSONObject().apply {
+            put("name", "${s.deviceName} Upload Aktiv")
+            put("unique_id", "${s.deviceId}_upload_active")
             put("state_topic", "$base/upload/state")
             put("payload_on", "ON")
             put("payload_off", "OFF")
-            put("retain", true)
-            put("optimistic", true)
-            put("icon", "mdi:cloud-upload")
+            put("icon", "mdi:cloud-upload-outline")
             put("device", device())
         })
 
@@ -138,27 +148,34 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
     /**
      * Publishes the current sensor values (retained) so entities show real
      * data right away instead of "unbekannt" until the next scheduled
-     * capture or upload. There is no separate heartbeat: every scheduled
-     * capture calls this too (see CameraForegroundService.capture()), which
-     * already proves the app is alive via last_photo/battery/etc. updating.
+     * capture or upload.
      */
     suspend fun publishState() {
-        try {
-            val dao = AppDatabase.getInstance(context).photoDao()
-            mqtt.publish("$base/battery", getBattery().toString())
-            mqtt.publish("$base/photos_pending", dao.getPendingCount().toString())
-            mqtt.publish("$base/enabled/state", if (s.timelapseEnabled) "ON" else "OFF")
-            mqtt.publish("$base/time_window/state", if (s.timeWindowEnabled) "ON" else "OFF")
-            mqtt.publish("$base/window_start/state", String.format(Locale.US, "%02d:%02d", s.windowStartHour, s.windowStartMinute))
-            mqtt.publish("$base/window_end/state", String.format(Locale.US, "%02d:%02d", s.windowEndHour, s.windowEndMinute))
-            mqtt.publish("$base/capture_interval/state", s.captureIntervalMinutes.toString())
-            mqtt.publish("$base/upload/state", if (s.manualUploadRequested) "ON" else "OFF")
-            mqtt.publish("$base/smb_upload/state", if (s.smbUploadEnabled) "ON" else "OFF")
-            mqtt.publish("$base/smb_upload_time/state", String.format(Locale.US, "%02d:%02d", s.smbUploadHour, s.smbUploadMinute))
-            dao.getLastPhoto()?.let {
-                mqtt.publish("$base/last_photo", Instant.ofEpochMilli(it.capturedAt).toString())
-            }
+        val dao = AppDatabase.getInstance(context).photoDao()
+        val pendingCount = try { dao.getPendingCount().toString() } catch (_: Throwable) { "0" }
+        val lastPhoto = try { dao.getLastPhoto()?.let { Instant.ofEpochMilli(it.capturedAt).toString() } } catch (_: Throwable) { null }
+        val bat = try { getBattery().toString() } catch (_: Throwable) { "100" }
+
+        if (!safePublish("$base/battery", bat)) return
+        safePublish("$base/photos_pending", pendingCount)
+        safePublish("$base/enabled/state", if (s.timelapseEnabled) "ON" else "OFF")
+        safePublish("$base/time_window/state", if (s.timeWindowEnabled) "ON" else "OFF")
+        safePublish("$base/window_start/state", String.format(Locale.US, "%02d:%02d", s.windowStartHour, s.windowStartMinute))
+        safePublish("$base/window_end/state", String.format(Locale.US, "%02d:%02d", s.windowEndHour, s.windowEndMinute))
+        safePublish("$base/capture_interval/state", s.captureIntervalMinutes.toString())
+        safePublish("$base/upload/state", if (s.manualUploadRequested) "ON" else "OFF")
+        safePublish("$base/smb_upload/state", if (s.smbUploadEnabled) "ON" else "OFF")
+        safePublish("$base/smb_upload_time/state", String.format(Locale.US, "%02d:%02d", s.smbUploadHour, s.smbUploadMinute))
+        if (lastPhoto != null) {
+            safePublish("$base/last_photo", lastPhoto)
+        }
+    }
+
+    private suspend fun safePublish(topic: String, payload: String): Boolean {
+        return try {
+            mqtt.publish(topic, payload)
         } catch (_: Throwable) {
+            false
         }
     }
 

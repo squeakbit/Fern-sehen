@@ -207,6 +207,8 @@ class Camera2Capture(private val context: Context) {
      * doc. Safe to call even if [capture] threw.
      */
     fun close() {
-        thread.quitSafely()
+        handler.postDelayed({
+            try { thread.quitSafely() } catch (_: Throwable) {}
+        }, 300)
     }
 }
