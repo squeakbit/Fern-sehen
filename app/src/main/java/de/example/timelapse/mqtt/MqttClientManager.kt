@@ -239,7 +239,7 @@ class MqttClientManager(private val context: Context) {
                 val o = MqttConnectionOptions().apply {
                     isCleanStart = false
                     isAutomaticReconnect = true
-                    keepAliveInterval = 60
+                    keepAliveInterval = 600
                     val secrets = SecureSecrets.getInstance(context)
                     userName = secrets.mqttUsername.ifBlank { settings.mqttUsername }
                     password = secrets.mqttPassword.ifBlank { settings.mqttPassword }.toByteArray()
