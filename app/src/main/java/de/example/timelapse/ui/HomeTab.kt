@@ -19,6 +19,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -51,6 +52,7 @@ fun HomeTab(
     val settings = remember { SettingsManager(context) }
     var enabled by remember { mutableStateOf(settings.timelapseEnabled) }
     var interval by remember { mutableStateOf(settings.captureIntervalMinutes.toString()) }
+    var focusMode by remember { mutableIntStateOf(settings.focusMode) }
     var timeWindowEnabled by remember { mutableStateOf(settings.timeWindowEnabled) }
     var startHour by remember { mutableIntStateOf(settings.windowStartHour) }
     var startMinute by remember { mutableIntStateOf(settings.windowStartMinute) }
@@ -68,6 +70,7 @@ fun HomeTab(
             when (key) {
                 "timelapse_enabled" -> enabled = settings.timelapseEnabled
                 "capture_interval_minutes" -> interval = settings.captureIntervalMinutes.toString()
+                "focus_mode" -> focusMode = settings.focusMode
                 "time_window_enabled" -> timeWindowEnabled = settings.timeWindowEnabled
                 "window_start_hour" -> startHour = settings.windowStartHour
                 "window_start_minute" -> startMinute = settings.windowStartMinute
@@ -89,6 +92,7 @@ fun HomeTab(
                 // Refresh all states on resume
                 enabled = settings.timelapseEnabled
                 interval = settings.captureIntervalMinutes.toString()
+                focusMode = settings.focusMode
                 timeWindowEnabled = settings.timeWindowEnabled
                 startHour = settings.windowStartHour
                 startMinute = settings.windowStartMinute
@@ -175,9 +179,46 @@ fun HomeTab(
                 },
                 label = { Text(stringResource(R.string.interval_minutes)) },
                 leadingIcon = { Icon(Icons.Default.Update, null) },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                visualTransformation = VisualTransformation.None,
+                singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
+        }
+
+        item {
+            SectionHeader(stringResource(R.string.focus_mode), Icons.Default.CenterFocusWeak)
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = focusMode == 0,
+                            onClick = {
+                                focusMode = 0
+                                settings.focusMode = 0
+                            },
+                            label = { Text(stringResource(R.string.focus_mode_auto)) },
+                            leadingIcon = if (focusMode == 0) { { Icon(Icons.Default.Check, null) } } else null,
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = focusMode == 1,
+                            onClick = {
+                                focusMode = 1
+                                settings.focusMode = 1
+                            },
+                            label = { Text(stringResource(R.string.focus_mode_infinity)) },
+                            leadingIcon = if (focusMode == 1) { { Icon(Icons.Default.Check, null) } } else null,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Text(
+                        text = if (focusMode == 1) stringResource(R.string.focus_mode_infinity_hint) else stringResource(R.string.focus_mode_auto_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
 
         item {
@@ -235,15 +276,16 @@ fun HomeTab(
                         OutlinedTextField(
                             value = offsetText,
                             onValueChange = {
-                                offsetText = it
-                                val sec = it.toIntOrNull()
+                                offsetText = it.filter(Char::isDigit)
+                                val sec = offsetText.toIntOrNull()
                                 if (sec != null && sec in 0..300) {
                                     settings.windowOffsetSeconds = sec
                                     AlarmScheduler(context).scheduleNextCapture()
                                 }
                             },
                             label = { Text(stringResource(R.string.light_offset_seconds)) },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            visualTransformation = VisualTransformation.None,
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )

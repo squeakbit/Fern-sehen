@@ -156,6 +156,25 @@ class CameraForegroundService : Service() {
 
     private var mqttJob: Job? = null
     private fun startMqttListenerIfNeeded() {
+        val s = SettingsManager(this)
+        val activeWindow = TimeWindowUtils.isWithinWindowOrWindowEnd(s)
+
+        if (s.timeWindowEnabled && !activeWindow) {
+            // Outside active capture window (off-hours): cancel continuous listener job to avoid Wi-Fi radio wakeups,
+            // and perform a single-shot poll for retained command messages.
+            if (mqttJob?.isActive == true) {
+                mqttJob?.cancel()
+                mqttJob = null
+                scope.launch {
+                    try { MqttClientManager(this@CameraForegroundService).disconnect() } catch (_: Throwable) {}
+                }
+            }
+            scope.launch {
+                try { MqttClientManager(this@CameraForegroundService).pollMqttCommandsOnce() } catch (_: Throwable) {}
+            }
+            return
+        }
+
         if (mqttJob?.isActive == true) return
         mqttJob = scope.launch {
             try {
@@ -320,18 +339,23 @@ class CameraForegroundService : Service() {
                     }
 
                     if (!s.timelapseEnabled) {
+                        AlarmScheduler(this@CameraForegroundService).cancelCapture()
                         WakeLockHolder.release()
                         // Wait indefinitely until nudged via PrefListener
                         nudgeChannel.receive()
                         continue
                     }
                     
+                    // Always guarantee that an exact AlarmManager alarm is scheduled in the OS
+                    // before going into withTimeoutOrNull, ensuring Doze sleep can wake up CPU.
+                    AlarmScheduler(this@CameraForegroundService).scheduleNextCapture()
+
                     val waitMs = msUntilNextCapture(s)
                     if (waitMs <= 15000L) { // 15s grace period
                         if (waitMs > 0L) {
                             delay(waitMs)
                         }
-                        if (!serviceLock.isHeld) serviceLock.acquire(3 * 60_000L)
+                        if (!serviceLock.isHeld) serviceLock.acquire(45_000L)
                         try {
                             capture(s)
                         } finally {
@@ -341,6 +365,7 @@ class CameraForegroundService : Service() {
                     } else {
                         WakeLockHolder.release()
                         if (serviceLock.isHeld) try { serviceLock.release() } catch (_: Throwable) {}
+                        startMqttListenerIfNeeded()
                         
                         withTimeoutOrNull(waitMs) {
                             nudgeChannel.receive()
@@ -379,7 +404,7 @@ class CameraForegroundService : Service() {
                 val failures = mutableListOf<String>()
                 for ((index, camera) in cameras.withIndex()) {
                     try {
-                        if (index > 0) delay(2000)
+                        if (index > 0) delay(300)
                         val (w, h) = PhotoCaptureHelper.resolveResolution(s, camera.id)
                         PhotoCaptureHelper.captureAndSave(this@CameraForegroundService, camera.id, w, h, s.jpegQuality, PhotoCaptureHelper.cameraLabel(camera))
                         savedAny = true

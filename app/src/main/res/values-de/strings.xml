@@ -10,6 +10,11 @@
     <string name="disabled">Deaktiviert</string>
     <string name="time_control">Zeitsteuerung</string>
     <string name="interval_minutes">Intervall (Minuten)</string>
+    <string name="focus_mode">Fokus-Modus</string>
+    <string name="focus_mode_auto">Auto-Fokus (Kontinuierlich)</string>
+    <string name="focus_mode_infinity">Unendlich / Fixfokus (Schnell &amp; Sparsam)</string>
+    <string name="focus_mode_auto_hint">Misst den Autofokus vor jeder Aufnahme (~3 Sek. Aktivzeit).</string>
+    <string name="focus_mode_infinity_hint">Fixfokus auf Unendlich ohne AF-Suchlauf. Sofortige Aufnahme (&lt;0,5s) spart maximal Akku.</string>
     <string name="time_window">Zeitfenster</string>
     <string name="use_time_window">Zeitfenster verwenden</string>
     <string name="start_time">Startzeit</string>
@@ -55,6 +60,7 @@
     <string name="language">Sprache</string>
     <string name="standard_resolution">Standard-Auflösung</string>
     <string name="image_size">Bildgröße</string>
+    <string name="jpeg_quality">JPEG-Qualität (%1$d%%)</string>
     <string name="loading">Lade...</string>
     <string name="smb_cloud">SMB Cloud</string>
     <string name="auto_upload">Autoupload</string>

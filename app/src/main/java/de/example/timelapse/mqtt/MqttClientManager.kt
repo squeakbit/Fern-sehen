@@ -7,6 +7,7 @@ import de.example.timelapse.network.NetworkMonitor
 import de.example.timelapse.service.CameraForegroundService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -199,6 +200,37 @@ class MqttClientManager(private val context: Context) {
             c.subscribe(topics, IntArray(topics.size) { 1 }).waitForCompletion(5000)
         } catch (t: Throwable) {
             Log.w("Timelapse", "handleMqttCommands failed: ${t.message}")
+        }
+    }
+
+    /**
+     * Used outside the active capture window (off-hours) to briefly connect,
+     * check for any retained command messages on subscriber topics, process them, and disconnect
+     * to prevent background Wi-Fi radio wakeups overnight.
+     */
+    suspend fun pollMqttCommandsOnce(timeoutMs: Long = 4000L) = withContext(Dispatchers.IO) {
+        val host = settings.mqttHost
+        if (host.isBlank() || !networkMonitor.isCurrentlyOnline()) return@withContext
+        try {
+            handleMqttCommands()
+            delay(timeoutMs)
+            disconnect()
+        } catch (t: Throwable) {
+            Log.w("Timelapse", "pollMqttCommandsOnce failed: ${t.message}")
+        }
+    }
+
+    suspend fun disconnect() = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            try {
+                sharedClient?.let {
+                    if (it.isConnected) {
+                        try { it.disconnect().waitForCompletion(2000) } catch (_: Throwable) {}
+                    }
+                    try { it.close() } catch (_: Throwable) {}
+                }
+            } catch (_: Throwable) {}
+            sharedClient = null
         }
     }
 

@@ -72,7 +72,8 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
         config("text", "window_end", JSONObject().apply {
             put("name", "${s.deviceName} Endzeit")
             put("unique_id", "${s.deviceId}_window_end")
-            put("command_topic", "$base/window_end/state")
+            put("command_topic", "$base/window_end/set")
+            put("state_topic", "$base/window_end/state")
             put("pattern", "^[0-2][0-9]:[0-5][0-9]$")
             put("mode", "text")
             put("icon", "mdi:clock-end")

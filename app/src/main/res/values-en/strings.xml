@@ -10,6 +10,11 @@
     <string name="disabled">Disabled</string>
     <string name="time_control">Time Control</string>
     <string name="interval_minutes">Interval (minutes)</string>
+    <string name="focus_mode">Focus Mode</string>
+    <string name="focus_mode_auto">Auto Focus (Continuous)</string>
+    <string name="focus_mode_infinity">Infinity / Fixed Focus (Fast &amp; Energy-Saving)</string>
+    <string name="focus_mode_auto_hint">Meters autofocus before each capture (~3 sec active time).</string>
+    <string name="focus_mode_infinity_hint">Fixed focus at infinity without AF sweep. Instant capture (&lt;0.5s) saves maximum battery.</string>
     <string name="time_window">Time Window</string>
     <string name="use_time_window">Use Time Window</string>
     <string name="start_time">Start Time</string>

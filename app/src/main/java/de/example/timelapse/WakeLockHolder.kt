@@ -15,7 +15,7 @@ object WakeLockHolder {
     private var wakeLock: PowerManager.WakeLock? = null
 
     @Synchronized
-    fun acquire(context: Context, timeoutMs: Long) {
+    fun acquire(context: Context, timeoutMs: Long = 30_000L) {
         val pm = context.applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
         if (wakeLock == null) {
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Timelapse:AlarmWakeLock").apply {

@@ -44,12 +44,28 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        val isAlarmCapture = intent?.getBooleanExtra("EXTRA_ALARM_CAPTURE", false) == true
+
         if (Build.VERSION.SDK_INT >= 27) {
             setShowWhenLocked(true)
-            setTurnScreenOn(true)
+            if (!isAlarmCapture) {
+                setTurnScreenOn(true)
+            }
         } else {
             @Suppress("DEPRECATION")
-            window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
+            if (!isAlarmCapture) {
+                window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
+            } else {
+                @Suppress("DEPRECATION")
+                window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
+            }
+        }
+
+        if (isAlarmCapture) {
+            window.setBackgroundDrawableResource(android.R.color.black)
+            val lp = window.attributes
+            lp.screenBrightness = 0.01f
+            window.attributes = lp
         }
 
         cameraPermission.launch(Manifest.permission.CAMERA)
@@ -79,11 +95,15 @@ class MainActivity : ComponentActivity() {
 
     private fun handleWakeupIntent(intent: Intent?) {
         if (intent?.getBooleanExtra("EXTRA_ALARM_CAPTURE", false) == true) {
-            // Set window brightness to minimum (0.01f) so the screen stays dark
-            // during the automated background capture process on older APIs like Android 9.
-            val lp = window.attributes
-            lp.screenBrightness = 0.01f
-            window.attributes = lp
+            val pm = getSystemService(PowerManager::class.java)
+            val isScreenOff = !pm.isInteractive
+
+            if (isScreenOff) {
+                window.setBackgroundDrawableResource(android.R.color.black)
+                val lp = window.attributes
+                lp.screenBrightness = 0.01f
+                window.attributes = lp
+            }
 
             // Ensure camera service is running while activity has foreground privileges (Android 14+ fix)
             try {
@@ -93,17 +113,19 @@ class MainActivity : ComponentActivity() {
                 Log.w("Timelapse", "Failed to ensure camera service running from wakeup activity", t)
             }
 
-            lifecycleScope.launch {
-                delay(8000)
-                if (!isFinishing) {
-                    try { 
-                        moveTaskToBack(true) 
-                    } catch (_: Throwable) {}
-                    
-                    // Restore default brightness when moving to the background
-                    val lpRestore = window.attributes
-                    lpRestore.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-                    window.attributes = lpRestore
+            if (isScreenOff) {
+                lifecycleScope.launch {
+                    delay(3500)
+                    if (!isFinishing) {
+                        try { 
+                            moveTaskToBack(true) 
+                        } catch (_: Throwable) {}
+                        
+                        // Restore default brightness when moving to the background
+                        val lpRestore = window.attributes
+                        lpRestore.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                        window.attributes = lpRestore
+                    }
                 }
             }
         }

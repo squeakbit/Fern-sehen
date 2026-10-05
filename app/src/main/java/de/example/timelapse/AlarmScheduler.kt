@@ -57,14 +57,36 @@ class AlarmScheduler(private val c: Context) {
     }
 
     /**
-     * Schedules an exact "Alarm Clock" nudge alarm for the next capture.
-     * Uses [AlarmManager.AlarmClockInfo] to guarantee device wake-up from Doze mode on Android 9-16+.
+     * Schedules the next capture alarm.
+     * - On modern Android (API 31+ / Android 12–16+) with exact alarm permissions,
+     *   uses [setExactAndAllowWhileIdle] for periodic captures (>= 1m) to prevent status bar alarm icon and system broadcast churn.
+     * - On older Android versions (API < 31, e.g. Android 9),
+     *   continues using [setAlarmClock] to guarantee unthrottled execution from deep Doze sleep.
      */
     fun scheduleNextCapture() {
         val s = SettingsManager(c)
         val waitMs = TimeWindowUtils.msUntilNextCapture(s)
         val at = System.currentTimeMillis() + waitMs + 500L
-        scheduleAlarmClock(CAPTURE, RC, at)
+        val useExactWhileIdle = Build.VERSION.SDK_INT >= 31 && s.captureIntervalMinutes >= 1 && am.canScheduleExactAlarms()
+        if (useExactWhileIdle) {
+            scheduleExactAllowWhileIdle(CAPTURE, RC, at)
+        } else {
+            scheduleAlarmClock(CAPTURE, RC, at)
+        }
+    }
+
+    private fun scheduleExactAllowWhileIdle(action: String, request: Int, at: Long) {
+        val pi = pending(action, request)
+        try {
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        } catch (e: SecurityException) {
+            Log.w("Timelapse", "SecurityException setting exact alarm, using fallback", e)
+            try {
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            } catch (t: Throwable) {
+                Log.e("Timelapse", "Failed to schedule fallback alarm", t)
+            }
+        }
     }
 
     private fun scheduleAlarmClock(action: String, request: Int, at: Long) {
@@ -77,12 +99,13 @@ class AlarmScheduler(private val c: Context) {
 
         try {
             if (canExact) {
-                val intent = Intent(c, MainActivity::class.java)
+                // Pass Activity PendingIntent for showIntent so AlarmManagerService and OEM
+                // power management (e.g. Huawei EMUI in Doze) validate the AlarmClockInfo properly.
                 val showIntent = PendingIntent.getActivity(
                     c,
                     0,
-                    intent,
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                    Intent(c, MainActivity::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
                 val info = AlarmManager.AlarmClockInfo(at, showIntent)
                 am.setAlarmClock(info, pi)

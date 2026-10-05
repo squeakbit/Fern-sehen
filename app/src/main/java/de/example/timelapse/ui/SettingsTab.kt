@@ -42,7 +42,7 @@ fun SettingsTab(
     onRequestIgnoreBatteryOptimizations: () -> Unit,
     onRequestExactAlarmPermission: () -> Unit
 ) {
-    val context = LocalContext.current.applicationContext
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val settings = remember { SettingsManager(context) }
     val secrets = remember { SecureSecrets.getInstance(context) }
@@ -137,6 +137,63 @@ fun SettingsTab(
                         })
                     }
                 }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            var quality by remember { mutableIntStateOf(settings.jpegQuality) }
+            Column {
+                Text(
+                    text = stringResource(R.string.jpeg_quality, quality),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Slider(
+                    value = quality.toFloat(),
+                    onValueChange = {
+                        val intVal = it.toInt()
+                        quality = intVal
+                        settings.jpegQuality = intVal
+                    },
+                    valueRange = 10f..100f,
+                    steps = 89,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                var focusMode by remember { mutableIntStateOf(settings.focusMode) }
+                Text(
+                    text = stringResource(R.string.focus_mode),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = focusMode == 0,
+                        onClick = {
+                            focusMode = 0
+                            settings.focusMode = 0
+                        },
+                        label = { Text(stringResource(R.string.focus_mode_auto)) },
+                        leadingIcon = if (focusMode == 0) { { Icon(Icons.Default.Check, null) } } else null,
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = focusMode == 1,
+                        onClick = {
+                            focusMode = 1
+                            settings.focusMode = 1
+                        },
+                        label = { Text(stringResource(R.string.focus_mode_infinity)) },
+                        leadingIcon = if (focusMode == 1) { { Icon(Icons.Default.Check, null) } } else null,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Text(
+                    text = if (focusMode == 1) stringResource(R.string.focus_mode_infinity_hint) else stringResource(R.string.focus_mode_auto_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
 

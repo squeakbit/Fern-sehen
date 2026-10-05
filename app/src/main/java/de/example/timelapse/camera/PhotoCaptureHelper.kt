@@ -44,7 +44,7 @@ object PhotoCaptureHelper {
         val camera = Camera2Capture(context)
         val temp = File.createTempFile("preview-", ".jpg", context.cacheDir)
         try {
-            if (camera.capture(cameraId, previewSize.width, previewSize.height, 80, temp)) temp else null
+            if (camera.capture(cameraId, previewSize.width, previewSize.height, 80, temp, settings.focusMode)) temp else null
         } catch (_: Throwable) {
             temp.delete()
             null
@@ -146,9 +146,10 @@ object PhotoCaptureHelper {
         val temp = File.createTempFile("capture-", ".jpg", context.cacheDir)
         // Single-use per capture - must be closed afterwards or its
         // background thread leaks for the rest of the process lifetime.
+        val settings = SettingsManager(context)
         val camera = Camera2Capture(context)
         try {
-            camera.capture(cameraId, width, height, jpegQuality, temp)
+            camera.capture(cameraId, width, height, jpegQuality, temp, settings.focusMode)
 
             val uri = if (Build.VERSION.SDK_INT >= 29) {
                 saveViaScopedStorage(context, temp, fileName, folderDate)

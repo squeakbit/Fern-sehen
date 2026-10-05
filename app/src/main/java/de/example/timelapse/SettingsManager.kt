@@ -25,7 +25,7 @@ class SettingsManager(context: Context) {
         set(v) = p.edit().putBoolean("timelapse_enabled", v).apply()
     var captureIntervalMinutes: Int
         get() = p.getInt("capture_interval_minutes", 10)
-        set(v) = p.edit().putInt("capture_interval_minutes", v.coerceIn(10, 1440)).apply()
+        set(v) = p.edit().putInt("capture_interval_minutes", v.coerceIn(1, 1440)).apply()
     var lastPreviewCameraId: String
         get() = p.getString("last_preview_camera_id", "") ?: ""
         set(v) = p.edit().putString("last_preview_camera_id", v).apply()
@@ -93,6 +93,9 @@ class SettingsManager(context: Context) {
     var jpegQuality: Int
         get() = p.getInt("jpeg_quality", 90)
         set(v) = p.edit().putInt("jpeg_quality", v.coerceIn(1, 100)).apply()
+    var focusMode: Int
+        get() = p.getInt("focus_mode", 0)
+        set(v) = p.edit().putInt("focus_mode", v).apply()
     var smbUploadEnabled: Boolean
         get() = p.getBoolean("smb_upload_enabled", true)
         set(v) = p.edit().putBoolean("smb_upload_enabled", v).apply()

@@ -42,12 +42,14 @@ class Camera2Capture(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun capture(cameraId: String, width: Int, height: Int, jpegQuality: Int, outFile: File): Boolean {
+    fun capture(cameraId: String, width: Int, height: Int, jpegQuality: Int, outFile: File, focusMode: Int = 0): Boolean {
         val manager = context.getSystemService(CameraManager::class.java)
         val chars = manager.getCameraCharacteristics(cameraId)
         val afModes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
         val supportsAf = afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_AUTO) ||
                 afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+        val supportsAfOff = afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_OFF)
+        val useFastInfinityCapture = (focusMode == 1)
         val jpegOrientation = computeJpegOrientation()
 
         val latch = CountDownLatch(1)
@@ -71,10 +73,10 @@ class Camera2Capture(private val context: Context) {
             }
         }, handler)
 
-        // Small surface used purely to meter/drive autofocus, so we don't
+        // Small surface used purely to meter/drive autofocus when AF metering is active, so we don't
         // waste time JPEG-encoding throwaway preview frames.
-        val afReader = ImageReader.newInstance(320, 240, ImageFormat.YUV_420_888, 2)
-        afReader.setOnImageAvailableListener({ r -> r.acquireLatestImage()?.close() }, handler)
+        val afReader = if (!useFastInfinityCapture && supportsAf) ImageReader.newInstance(320, 240, ImageFormat.YUV_420_888, 2) else null
+        afReader?.setOnImageAvailableListener({ r -> r.acquireLatestImage()?.close() }, handler)
 
         var device: CameraDevice? = null
         var session: CameraCaptureSession? = null
@@ -90,7 +92,11 @@ class Camera2Capture(private val context: Context) {
                     addTarget(reader.surface)
                     set(CaptureRequest.JPEG_QUALITY, jpegQuality.toByte())
                     set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation)
-                    if (supportsAf) {
+                    if (useFastInfinityCapture && supportsAfOff) {
+                        set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                        set(CaptureRequest.LENS_FOCUS_DISTANCE, 0.0f) // 0.0 Diopters = Infinity
+                        set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+                    } else if (supportsAf) {
                         set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
                         set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
                     }
@@ -114,6 +120,11 @@ class Camera2Capture(private val context: Context) {
                 }
             }
 
+            if (afReader == null) {
+                finishAf()
+                return
+            }
+
             try {
                 val previewReq = d.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                     addTarget(afReader.surface)
@@ -121,8 +132,8 @@ class Camera2Capture(private val context: Context) {
                 }.build()
                 s.setRepeatingRequest(previewReq, object : CameraCaptureSession.CaptureCallback() {}, handler)
 
-                // Safety net in case AF never reports a locked/failed state.
-                handler.postDelayed({ finishAf() }, 3000)
+                // Safety net in case AF never reports a locked/failed state - 1.2s is plenty for AF.
+                handler.postDelayed({ finishAf() }, 1200)
 
                 // Give continuous AF a brief head start, then request a lock.
                 handler.postDelayed({
@@ -141,7 +152,8 @@ class Camera2Capture(private val context: Context) {
                             ) {
                                 val state = result.get(CaptureResult.CONTROL_AF_STATE)
                                 if (state == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED ||
-                                    state == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED
+                                    state == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED ||
+                                    state == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED
                                 ) {
                                     finishAf()
                                 }
@@ -150,7 +162,7 @@ class Camera2Capture(private val context: Context) {
                     } catch (t: Throwable) {
                         finishAf()
                     }
-                }, 200)
+                }, 100)
             } catch (t: Throwable) {
                 fail(t)
             }
@@ -161,12 +173,13 @@ class Camera2Capture(private val context: Context) {
                 override fun onOpened(d: CameraDevice) {
                     device = d
                     try {
+                        val surfaces = if (afReader != null) listOf(reader.surface, afReader.surface) else listOf(reader.surface)
                         d.createCaptureSession(
-                            listOf(reader.surface, afReader.surface),
+                            surfaces,
                             object : CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(s: CameraCaptureSession) {
                                     session = s
-                                    if (supportsAf) autoFocusThenCapture(d, s) else doStillCapture(d, s)
+                                    if (!useFastInfinityCapture && supportsAf) autoFocusThenCapture(d, s) else doStillCapture(d, s)
                                 }
                                 override fun onConfigureFailed(s: CameraCaptureSession) {
                                     fail(IllegalStateException("Camera session failed"))
@@ -193,7 +206,7 @@ class Camera2Capture(private val context: Context) {
             try { session?.close() } catch (_: Throwable) {}
             try { device?.close() } catch (_: Throwable) {}
             reader.close()
-            afReader.close()
+            afReader?.close()
         }
         if (!ok) {
             throw error ?: IllegalStateException("Camera capture failed or timed out for camera $cameraId")
