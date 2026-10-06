@@ -8,6 +8,7 @@ import de.example.timelapse.service.CameraForegroundService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -31,25 +32,47 @@ class MqttClientManager(private val context: Context) {
 
         @Volatile
         private var lastConnectFailureTime: Long = 0L
-        private const val CONNECT_COOLDOWN_MS = 30_000L
+        private const val CONNECT_COOLDOWN_MS = 5_000L
 
         fun resetCooldown() {
             lastConnectFailureTime = 0L
+        }
+
+        fun isConnected(): Boolean {
+            return sharedClient?.isConnected == true
+        }
+
+        suspend fun invalidateClient() {
+            mutex.withLock {
+                try {
+                    sharedClient?.let {
+                        if (it.isConnected) {
+                            try { it.disconnect().waitForCompletion(1000) } catch (_: Throwable) {}
+                        }
+                        try { it.close() } catch (_: Throwable) {}
+                    }
+                } catch (_: Throwable) {}
+                sharedClient = null
+            }
         }
     }
 
     suspend fun publish(topic: String, payload: String, retained: Boolean = true): Boolean = withContext(Dispatchers.IO) {
         val host = settings.mqttHost
         if (host.isBlank()) return@withContext false
-        try {
-            val c = getConnectedClient()
-            if (c.isConnected) {
-                val msg = MqttMessage(payload.toByteArray()).apply { qos = 1; isRetained = retained }
-                c.publish(topic, msg).waitForCompletion(5000)
-                return@withContext true
+        for (attempt in 1..2) {
+            try {
+                val c = getConnectedClient()
+                if (c.isConnected) {
+                    val msg = MqttMessage(payload.toByteArray()).apply { qos = 1; isRetained = retained }
+                    c.publish(topic, msg).waitForCompletion(5000)
+                    return@withContext true
+                }
+            } catch (t: Throwable) {
+                Log.w("Timelapse", "MQTT publish attempt $attempt failed for $topic: ${t.message}")
+                invalidateClient()
+                if (attempt < 2) delay(1000)
             }
-        } catch (t: Throwable) {
-            Log.w("Timelapse", "MQTT publish failed for $topic: ${t.message}")
         }
         return@withContext false
     }
@@ -66,142 +89,167 @@ class MqttClientManager(private val context: Context) {
     suspend fun handleMqttCommands() = withContext(Dispatchers.IO) {
         val host = settings.mqttHost
         if (host.isBlank()) return@withContext
-        val c = try { getConnectedClient() } catch (_: Throwable) { return@withContext }
 
-        try {
-            MqttDiscovery(this@MqttClientManager, settings, context).publishAll()
-
-            val base = "timelapse/${settings.deviceId}"
-            val topics = arrayOf(
-                "$base/upload/set",
-                "$base/enabled/set",
-                "$base/time_window/set",
-                "$base/window_start/set",
-                "$base/window_end/set",
-                "$base/capture_interval/set",
-                "$base/smb_upload/set",
-                "$base/smb_upload_time/set"
-            )
-
-            c.setCallback(object : MqttCallback {
-                override fun disconnected(dr: MqttDisconnectResponse?) {
-                    Log.d("Timelapse", "MQTT client disconnected: ${dr?.reasonString}")
+        while (coroutineContext.isActive) {
+            try {
+                val c = getConnectedClient()
+                if (!c.isConnected) {
+                    invalidateClient()
+                    delay(3000)
+                    continue
                 }
-                override fun mqttErrorOccurred(ex: MqttException?) {}
-                override fun messageArrived(t: String?, msg: MqttMessage?) {
-                    val payload = msg?.toString() ?: ""
-                    if (payload.isBlank()) return
 
-                    var changed = false
-                    when (t) {
-                        "$base/upload/set" -> if (payload == "ON" || payload == "PRESS") { settings.manualUploadRequested = true; changed = true }
-                        "$base/enabled/set" -> {
-                            val on = (payload == "ON")
-                            if (on != settings.timelapseEnabled) {
-                                if (on) settings.lastCaptureAt = 0L
-                                settings.timelapseEnabled = on
-                                AlarmScheduler(context).scheduleAll()
-                                CameraForegroundService.nudge()
-                                changed = true
-                            }
-                        }
-                        "$base/time_window/set" -> {
-                            val on = (payload == "ON")
-                            if (on != settings.timeWindowEnabled) {
-                                settings.timeWindowEnabled = on
-                                AlarmScheduler(context).scheduleAll()
-                                CameraForegroundService.nudge()
-                                changed = true
-                            }
-                        }
-                        "$base/window_start/set" -> {
-                            val parts = payload.split(":")
-                            if (parts.size == 2) {
-                                settings.windowStartHour = parts[0].toIntOrNull() ?: settings.windowStartHour
-                                settings.windowStartMinute = parts[1].toIntOrNull() ?: settings.windowStartMinute
-                                AlarmScheduler(context).scheduleNextCapture()
-                                CameraForegroundService.nudge()
-                                changed = true
-                            }
-                        }
-                        "$base/window_end/set" -> {
-                            val parts = payload.split(":")
-                            if (parts.size == 2) {
-                                settings.windowEndHour = parts[0].toIntOrNull() ?: settings.windowEndHour
-                                settings.windowEndMinute = parts[1].toIntOrNull() ?: settings.windowEndMinute
-                                AlarmScheduler(context).scheduleNextCapture()
-                                CameraForegroundService.nudge()
-                                changed = true
-                            }
-                        }
-                        "$base/capture_interval/set" -> {
-                            val minutes = payload.toIntOrNull()
-                            if (minutes != null && minutes > 0) {
-                                settings.captureIntervalMinutes = minutes
-                                AlarmScheduler(context).scheduleAll()
-                                CameraForegroundService.nudge()
-                                changed = true
-                            }
-                        }
-                        "$base/smb_upload/set" -> {
-                            val on = (payload == "ON")
-                            if (on != settings.smbUploadEnabled) {
-                                settings.smbUploadEnabled = on
-                                AlarmScheduler(context).scheduleAll()
-                                CameraForegroundService.nudge()
-                                changed = true
-                            }
-                        }
-                        "$base/smb_upload_time/set" -> {
-                            val parts = payload.split(":")
-                            if (parts.size == 2) {
-                                val h = parts[0].toIntOrNull()
-                                val m = parts[1].toIntOrNull()
-                                if (h != null && m != null && h in 0..23 && m in 0..59) {
-                                    settings.smbUploadHour = h
-                                    settings.smbUploadMinute = m
-                                    AlarmScheduler(context).scheduleUpload()
+                MqttDiscovery(this@MqttClientManager, settings, context).publishAll()
+
+                val base = "timelapse/${settings.deviceId}"
+                val topics = arrayOf(
+                    "$base/upload/set",
+                    "$base/enabled/set",
+                    "$base/time_window/set",
+                    "$base/window_start/set",
+                    "$base/window_end/set",
+                    "$base/capture_interval/set",
+                    "$base/smb_upload/set",
+                    "$base/smb_upload_time/set"
+                )
+
+                val disconnectChannel = kotlinx.coroutines.channels.Channel<Unit>(1)
+
+                c.setCallback(object : MqttCallback {
+                    override fun disconnected(dr: MqttDisconnectResponse?) {
+                        Log.d("Timelapse", "MQTT client disconnected: ${dr?.reasonString}")
+                        disconnectChannel.trySend(Unit)
+                    }
+                    override fun mqttErrorOccurred(ex: MqttException?) {}
+                    override fun messageArrived(t: String?, msg: MqttMessage?) {
+                        val payload = msg?.toString() ?: ""
+                        if (payload.isBlank()) return
+
+                        var changed = false
+                        when (t) {
+                            "$base/upload/set" -> {
+                                val p = payload.uppercase().trim()
+                                if (p == "ON" || p == "PRESS" || p == "TRUE" || p == "1") {
+                                    settings.manualUploadRequested = true
                                     CameraForegroundService.nudge()
                                     changed = true
                                 }
                             }
+                            "$base/enabled/set" -> {
+                                val on = (payload == "ON")
+                                if (on != settings.timelapseEnabled) {
+                                    if (on) settings.lastCaptureAt = 0L
+                                    settings.timelapseEnabled = on
+                                    AlarmScheduler(context).scheduleAll()
+                                    CameraForegroundService.nudge()
+                                    changed = true
+                                }
+                            }
+                            "$base/time_window/set" -> {
+                                val on = (payload == "ON")
+                                if (on != settings.timeWindowEnabled) {
+                                    settings.timeWindowEnabled = on
+                                    AlarmScheduler(context).scheduleAll()
+                                    CameraForegroundService.nudge()
+                                    changed = true
+                                }
+                            }
+                            "$base/window_start/set" -> {
+                                val parts = payload.split(":")
+                                if (parts.size == 2) {
+                                    settings.windowStartHour = parts[0].toIntOrNull() ?: settings.windowStartHour
+                                    settings.windowStartMinute = parts[1].toIntOrNull() ?: settings.windowStartMinute
+                                    AlarmScheduler(context).scheduleNextCapture()
+                                    CameraForegroundService.nudge()
+                                    changed = true
+                                }
+                            }
+                            "$base/window_end/set" -> {
+                                val parts = payload.split(":")
+                                if (parts.size == 2) {
+                                    settings.windowEndHour = parts[0].toIntOrNull() ?: settings.windowEndHour
+                                    settings.windowEndMinute = parts[1].toIntOrNull() ?: settings.windowEndMinute
+                                    AlarmScheduler(context).scheduleNextCapture()
+                                    CameraForegroundService.nudge()
+                                    changed = true
+                                }
+                            }
+                            "$base/capture_interval/set" -> {
+                                val minutes = payload.toIntOrNull()
+                                if (minutes != null && minutes > 0) {
+                                    settings.captureIntervalMinutes = minutes
+                                    AlarmScheduler(context).scheduleAll()
+                                    CameraForegroundService.nudge()
+                                    changed = true
+                                }
+                            }
+                            "$base/smb_upload/set" -> {
+                                val on = (payload == "ON")
+                                if (on != settings.smbUploadEnabled) {
+                                    settings.smbUploadEnabled = on
+                                    AlarmScheduler(context).scheduleAll()
+                                    CameraForegroundService.nudge()
+                                    changed = true
+                                }
+                            }
+                            "$base/smb_upload_time/set" -> {
+                                val parts = payload.split(":")
+                                if (parts.size == 2) {
+                                    val h = parts[0].toIntOrNull()
+                                    val m = parts[1].toIntOrNull()
+                                    if (h != null && m != null && h in 0..23 && m in 0..59) {
+                                        settings.smbUploadHour = h
+                                        settings.smbUploadMinute = m
+                                        AlarmScheduler(context).scheduleUpload()
+                                        CameraForegroundService.nudge()
+                                        changed = true
+                                    }
+                                }
+                            }
+                        }
+
+                        if (changed) {
+                            val emptyMsg = MqttMessage("".toByteArray()).apply { qos = 1; isRetained = true }
+                            try { c.publish(t, emptyMsg) } catch (_: Throwable) {}
                         }
                     }
-
-                    if (changed) {
-                        val emptyMsg = MqttMessage("".toByteArray()).apply { qos = 1; isRetained = true }
-                        try { c.publish(t, emptyMsg) } catch (_: Throwable) {}
-                    }
-                }
-                override fun deliveryComplete(token: IMqttToken?) {}
-                override fun connectComplete(reconnect: Boolean, serverURI: String?) {
-                    Log.i("Timelapse", "MQTT connectComplete (reconnect=$reconnect)")
-                    CoroutineScope(Dispatchers.IO).launch {
-                        try {
-                            val ts = arrayOf(
-                                "$base/upload/set",
-                                "$base/enabled/set",
-                                "$base/time_window/set",
-                                "$base/window_start/set",
-                                "$base/window_end/set",
-                                "$base/capture_interval/set",
-                                "$base/smb_upload/set",
-                                "$base/smb_upload_time/set"
-                            )
-                            c.subscribe(ts, IntArray(ts.size) { 1 })
-                        } catch (t: Throwable) {
-                            Log.w("Timelapse", "MQTT re-subscribe failed: ${t.message}")
+                    override fun deliveryComplete(token: IMqttToken?) {}
+                    override fun connectComplete(reconnect: Boolean, serverURI: String?) {
+                        Log.i("Timelapse", "MQTT connectComplete (reconnect=$reconnect)")
+                        CoroutineScope(Dispatchers.IO).launch {
+                            try {
+                                val ts = arrayOf(
+                                    "$base/upload/set",
+                                    "$base/enabled/set",
+                                    "$base/time_window/set",
+                                    "$base/window_start/set",
+                                    "$base/window_end/set",
+                                    "$base/capture_interval/set",
+                                    "$base/smb_upload/set",
+                                    "$base/smb_upload_time/set"
+                                )
+                                c.subscribe(ts, IntArray(ts.size) { 1 })
+                            } catch (t: Throwable) {
+                                Log.w("Timelapse", "MQTT re-subscribe failed: ${t.message}")
+                            }
                         }
                     }
-                }
-                override fun authPacketArrived(reasonCode: Int, properties: MqttProperties?) {}
-            })
+                    override fun authPacketArrived(reasonCode: Int, properties: MqttProperties?) {}
+                })
 
-            c.subscribe(topics, IntArray(topics.size) { 1 }).waitForCompletion(5000)
-        } catch (t: Throwable) {
-            Log.w("Timelapse", "handleMqttCommands failed: ${t.message}")
+                c.subscribe(topics, IntArray(topics.size) { 1 }).waitForCompletion(5000)
+
+                disconnectChannel.receive()
+                invalidateClient()
+            } catch (t: Throwable) {
+                Log.w("Timelapse", "handleMqttCommands error: ${t.message}")
+                invalidateClient()
+            }
+            delay(3000)
         }
     }
+
+
 
     /**
      * Used outside the active capture window (off-hours) to briefly connect,

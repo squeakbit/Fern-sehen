@@ -17,6 +17,7 @@ import java.util.*
 
 import com.hierynomus.smbj.SmbConfig
 import de.example.timelapse.network.NetworkMonitor
+import kotlinx.coroutines.delay
 import java.util.concurrent.TimeUnit
 import de.example.timelapse.ui.deleteLocalMediaFile
 import de.example.timelapse.ui.isUriReadable
@@ -35,6 +36,11 @@ class SmbUploader(private val context:Context){
  }
 
  suspend fun uploadPendingPhotos():UploadResult=withContext(Dispatchers.IO){
+  var netRetries = 0
+  while (!NetworkMonitor.getInstance(context).isCurrentlyOnline() && netRetries < 10) {
+   delay(1000)
+   netRetries++
+  }
   if (!NetworkMonitor.getInstance(context).isCurrentlyOnline()) {
    Log.w("Timelapse", "Network offline: aborting SMB upload run")
    return@withContext UploadResult(0, 0, 0, "Netzwerk offline")

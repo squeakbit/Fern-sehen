@@ -58,10 +58,8 @@ class AlarmScheduler(private val c: Context) {
 
     /**
      * Schedules the next capture alarm.
-     * - On modern Android (API 31+ / Android 12–16+) with exact alarm permissions,
-     *   uses [setExactAndAllowWhileIdle] for periodic captures (>= 1m) to prevent status bar alarm icon and system broadcast churn.
-     * - On older Android versions (API < 31, e.g. Android 9),
-     *   continues using [setAlarmClock] to guarantee unthrottled execution from deep Doze sleep.
+     * On modern Android (API 31+ / Android 12–16+), uses [setExactAndAllowWhileIdle]
+     * for periodic captures (>= 1m) to avoid status bar alarm icon churn.
      */
     fun scheduleNextCapture() {
         val s = SettingsManager(c)
@@ -88,6 +86,8 @@ class AlarmScheduler(private val c: Context) {
             }
         }
     }
+
+
 
     private fun scheduleAlarmClock(action: String, request: Int, at: Long) {
         val pi = pending(action, request)

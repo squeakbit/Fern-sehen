@@ -175,7 +175,8 @@ class CameraForegroundService : Service() {
             return
         }
 
-        if (mqttJob?.isActive == true) return
+        if (mqttJob?.isActive == true && MqttClientManager.isConnected()) return
+        mqttJob?.cancel()
         mqttJob = scope.launch {
             try {
                 val mqtt = MqttClientManager(this@CameraForegroundService)
@@ -189,11 +190,6 @@ class CameraForegroundService : Service() {
         val s = SettingsManager(this@CameraForegroundService)
         if (!s.manualUploadRequested) return
         if (manualUploadJob?.isActive == true) return
-
-        if (!NetworkMonitor.getInstance(this).isCurrentlyOnline()) {
-            Log.w("Timelapse", "Skipping manual upload: network is offline")
-            return
-        }
 
         manualUploadJob = scope.launch {
             val pm = getSystemService(POWER_SERVICE) as PowerManager
@@ -261,11 +257,6 @@ class CameraForegroundService : Service() {
         if (!s.smbUploadEnabled) return
         if (dailyUploadJob?.isActive == true) return
 
-        if (!NetworkMonitor.getInstance(this).isCurrentlyOnline()) {
-            Log.w("Timelapse", "Skipping daily SMB upload: network is offline")
-            return
-        }
-
         dailyUploadJob = scope.launch {
             val pm = getSystemService(POWER_SERVICE) as PowerManager
             val uploadLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Timelapse:DailyUpload")
@@ -295,6 +286,11 @@ class CameraForegroundService : Service() {
                     if (result.lastError != null) {
                         mqtt.publish("timelapse/${s.deviceId}/last_error", result.lastError)
                     }
+                    val nowCal = Calendar.getInstance()
+                    lastDailyUploadDate = String.format(
+                        Locale.US, "%04d-%02d-%02d",
+                        nowCal.get(Calendar.YEAR), nowCal.get(Calendar.MONTH) + 1, nowCal.get(Calendar.DAY_OF_MONTH)
+                    )
                 }
                 StorageCleanupHelper.cleanOldEmptyFolders(this@CameraForegroundService)
                 MqttDiscovery(mqtt, s, this@CameraForegroundService).publishState()
@@ -333,7 +329,6 @@ class CameraForegroundService : Service() {
                         val currentHour = nowCal.get(Calendar.HOUR_OF_DAY)
                         val currentMinute = nowCal.get(Calendar.MINUTE)
                         if (currentHour == s.smbUploadHour && currentMinute == s.smbUploadMinute && lastDailyUploadDate != todayDate) {
-                            lastDailyUploadDate = todayDate
                             triggerDailyUploadInternal()
                         }
                     }

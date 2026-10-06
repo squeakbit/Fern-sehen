@@ -157,7 +157,7 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
         val lastPhoto = try { dao.getLastPhoto()?.let { Instant.ofEpochMilli(it.capturedAt).toString() } } catch (_: Throwable) { null }
         val bat = try { getBattery().toString() } catch (_: Throwable) { "100" }
 
-        if (!safePublish("$base/battery", bat)) return
+        safePublish("$base/battery", bat)
         safePublish("$base/photos_pending", pendingCount)
         safePublish("$base/enabled/state", if (s.timelapseEnabled) "ON" else "OFF")
         safePublish("$base/time_window/state", if (s.timeWindowEnabled) "ON" else "OFF")
