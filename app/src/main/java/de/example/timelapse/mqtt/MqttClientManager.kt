@@ -258,7 +258,7 @@ class MqttClientManager(private val context: Context) {
      */
     suspend fun pollMqttCommandsOnce(timeoutMs: Long = 4000L) = withContext(Dispatchers.IO) {
         val host = settings.mqttHost
-        if (host.isBlank() || !networkMonitor.isCurrentlyOnline()) return@withContext
+        if (host.isBlank() || !networkMonitor.ensureOnlineOrTryReconnect(3000L)) return@withContext
         try {
             handleMqttCommands()
             delay(timeoutMs)
@@ -286,7 +286,7 @@ class MqttClientManager(private val context: Context) {
         val host = settings.mqttHost
         if (host.isBlank()) throw Exception("No MQTT host")
 
-        if (!networkMonitor.isCurrentlyOnline()) {
+        if (!networkMonitor.ensureOnlineOrTryReconnect(4000L)) {
             throw Exception("Network offline")
         }
 
@@ -300,7 +300,7 @@ class MqttClientManager(private val context: Context) {
         return mutex.withLock {
             sharedClient?.let { if (it.isConnected) return it }
 
-            if (!networkMonitor.isCurrentlyOnline()) {
+            if (!networkMonitor.ensureOnlineOrTryReconnect(2000L)) {
                 throw Exception("Network offline")
             }
 
