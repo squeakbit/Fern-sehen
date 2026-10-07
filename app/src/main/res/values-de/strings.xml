@@ -13,8 +13,14 @@
     <string name="focus_mode">Fokus-Modus</string>
     <string name="focus_mode_auto">Auto-Fokus (Kontinuierlich)</string>
     <string name="focus_mode_infinity">Unendlich / Fixfokus (Schnell &amp; Sparsam)</string>
+    <string name="focus_mode_single_lock">Einmal-AF &amp; Sperren (Start/Zeitfenster)</string>
     <string name="focus_mode_auto_hint">Misst den Autofokus vor jeder Aufnahme (~3 Sek. Aktivzeit).</string>
     <string name="focus_mode_infinity_hint">Fixfokus auf Unendlich ohne AF-Suchlauf. Sofortige Aufnahme (&lt;0,5s) spart maximal Akku.</string>
+    <string name="focus_mode_single_lock_hint">Misst den Fokus einmalig zu Beginn der Aufnahme (bzw. zu Beginn jedes Zeitfensters) und sperrt ihn für alle weiteren Fotos.</string>
+    <string name="focus_locked_pending">Ausstehend: Wird bei erster Aufnahme gemessen</string>
+    <string name="focus_distance_infinity">Unendlich (0,00 dpt)</string>
+    <string name="focus_distance_meters">~%1$.1f m (%2$.2f dpt)</string>
+    <string name="focus_remeasure">Fokus neu messen</string>
     <string name="time_window">Zeitfenster</string>
     <string name="use_time_window">Zeitfenster verwenden</string>
     <string name="start_time">Startzeit</string>

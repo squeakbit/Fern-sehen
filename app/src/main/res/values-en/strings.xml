@@ -13,8 +13,14 @@
     <string name="focus_mode">Focus Mode</string>
     <string name="focus_mode_auto">Auto Focus (Continuous)</string>
     <string name="focus_mode_infinity">Infinity / Fixed Focus (Fast &amp; Energy-Saving)</string>
+    <string name="focus_mode_single_lock">Single AF &amp; Lock (Start/Window)</string>
     <string name="focus_mode_auto_hint">Meters autofocus before each capture (~3 sec active time).</string>
     <string name="focus_mode_infinity_hint">Fixed focus at infinity without AF sweep. Instant capture (&lt;0.5s) saves maximum battery.</string>
+    <string name="focus_mode_single_lock_hint">Meters autofocus once at start (or start of each time window) and locks focus for all subsequent captures.</string>
+    <string name="focus_locked_pending">Pending: Will be measured on first capture</string>
+    <string name="focus_distance_infinity">Infinity (0.00 dpt)</string>
+    <string name="focus_distance_meters">~%1$.1f m (%2$.2f dpt)</string>
+    <string name="focus_remeasure">Re-measure Focus</string>
     <string name="time_window">Time Window</string>
     <string name="use_time_window">Use Time Window</string>
     <string name="start_time">Start Time</string>

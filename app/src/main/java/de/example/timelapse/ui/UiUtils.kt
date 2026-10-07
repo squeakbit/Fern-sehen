@@ -99,6 +99,17 @@ fun deleteLocalMediaFile(context: Context, uri: Uri): Boolean {
     return deleted
 }
 
+fun formatFocusDistance(context: Context, distanceDiopters: Float?): String {
+    if (distanceDiopters == null) {
+        return context.getString(R.string.focus_locked_pending)
+    }
+    if (distanceDiopters < 0.01f) {
+        return context.getString(R.string.focus_distance_infinity)
+    }
+    val meters = 1.0f / distanceDiopters
+    return context.getString(R.string.focus_distance_meters, meters, distanceDiopters)
+}
+
 private fun parseDateFromFileName(fileName: String): Long {
     val nameWithoutExt = fileName.substringBeforeLast('.')
     val parts = nameWithoutExt.split('_')

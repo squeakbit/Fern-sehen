@@ -42,7 +42,16 @@ class Camera2Capture(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun capture(cameraId: String, width: Int, height: Int, jpegQuality: Int, outFile: File, focusMode: Int = 0): Boolean {
+    fun capture(
+        cameraId: String,
+        width: Int,
+        height: Int,
+        jpegQuality: Int,
+        outFile: File,
+        focusMode: Int = 0,
+        savedFocusDistance: Float? = null,
+        onFocusDistanceMeasured: ((Float) -> Unit)? = null
+    ): Boolean {
         val manager = context.getSystemService(CameraManager::class.java)
         val chars = manager.getCameraCharacteristics(cameraId)
         val afModes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
@@ -50,6 +59,7 @@ class Camera2Capture(private val context: Context) {
                 afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
         val supportsAfOff = afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_OFF)
         val useFastInfinityCapture = (focusMode == 1)
+        val useLockedFocusCapture = (focusMode == 2 && savedFocusDistance != null)
         val jpegOrientation = computeJpegOrientation()
 
         val latch = CountDownLatch(1)
@@ -75,7 +85,7 @@ class Camera2Capture(private val context: Context) {
 
         // Small surface used purely to meter/drive autofocus when AF metering is active, so we don't
         // waste time JPEG-encoding throwaway preview frames.
-        val afReader = if (!useFastInfinityCapture && supportsAf) ImageReader.newInstance(320, 240, ImageFormat.YUV_420_888, 2) else null
+        val afReader = if (!useFastInfinityCapture && !useLockedFocusCapture && supportsAf) ImageReader.newInstance(320, 240, ImageFormat.YUV_420_888, 2) else null
         afReader?.setOnImageAvailableListener({ r -> r.acquireLatestImage()?.close() }, handler)
 
         var device: CameraDevice? = null
@@ -96,12 +106,28 @@ class Camera2Capture(private val context: Context) {
                         set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
                         set(CaptureRequest.LENS_FOCUS_DISTANCE, 0.0f) // 0.0 Diopters = Infinity
                         set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+                    } else if (useLockedFocusCapture && supportsAfOff && savedFocusDistance != null) {
+                        set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                        set(CaptureRequest.LENS_FOCUS_DISTANCE, savedFocusDistance)
+                        set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
                     } else if (supportsAf) {
                         set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
                         set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
                     }
                 }.build()
-                s.capture(req, object : CameraCaptureSession.CaptureCallback() {}, handler)
+                s.capture(req, object : CameraCaptureSession.CaptureCallback() {
+                    override fun onCaptureCompleted(
+                        session: CameraCaptureSession,
+                        request: CaptureRequest,
+                        result: TotalCaptureResult
+                    ) {
+                        super.onCaptureCompleted(session, request, result)
+                        val dist = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
+                        if (dist != null) {
+                            onFocusDistanceMeasured?.invoke(dist)
+                        }
+                    }
+                }, handler)
             } catch (t: Throwable) {
                 fail(t)
             }
@@ -179,7 +205,7 @@ class Camera2Capture(private val context: Context) {
                             object : CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(s: CameraCaptureSession) {
                                     session = s
-                                    if (!useFastInfinityCapture && supportsAf) autoFocusThenCapture(d, s) else doStillCapture(d, s)
+                                    if (!useFastInfinityCapture && !useLockedFocusCapture && supportsAf) autoFocusThenCapture(d, s) else doStillCapture(d, s)
                                 }
                                 override fun onConfigureFailed(s: CameraCaptureSession) {
                                     fail(IllegalStateException("Camera session failed"))

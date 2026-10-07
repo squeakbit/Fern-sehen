@@ -167,7 +167,7 @@ fun SettingsTab(
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.height(4.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     FilterChip(
                         selected = focusMode == 0,
                         onClick = {
@@ -176,7 +176,17 @@ fun SettingsTab(
                         },
                         label = { Text(stringResource(R.string.focus_mode_auto)) },
                         leadingIcon = if (focusMode == 0) { { Icon(Icons.Default.Check, null) } } else null,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    FilterChip(
+                        selected = focusMode == 2,
+                        onClick = {
+                            focusMode = 2
+                            settings.focusMode = 2
+                        },
+                        label = { Text(stringResource(R.string.focus_mode_single_lock)) },
+                        leadingIcon = if (focusMode == 2) { { Icon(Icons.Default.Check, null) } } else null,
+                        modifier = Modifier.fillMaxWidth()
                     )
                     FilterChip(
                         selected = focusMode == 1,
@@ -186,14 +196,53 @@ fun SettingsTab(
                         },
                         label = { Text(stringResource(R.string.focus_mode_infinity)) },
                         leadingIcon = if (focusMode == 1) { { Icon(Icons.Default.Check, null) } } else null,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
                 Text(
-                    text = if (focusMode == 1) stringResource(R.string.focus_mode_infinity_hint) else stringResource(R.string.focus_mode_auto_hint),
+                    text = when (focusMode) {
+                        1 -> stringResource(R.string.focus_mode_infinity_hint)
+                        2 -> stringResource(R.string.focus_mode_single_lock_hint)
+                        else -> stringResource(R.string.focus_mode_auto_hint)
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                if (focusMode == 2) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    val selectedIds = settings.selectedCameraIds
+                    val activeCameras = remember(cameras, selectedIds) { cameras.filter { it.id in selectedIds } }
+                    for (cam in activeCameras) {
+                        val savedDist = settings.getSavedFocusDistance(cam.id)
+                        val statusText = formatFocusDistance(context, savedDist)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "${de.example.timelapse.camera.PhotoCaptureHelper.cameraLabel(cam)}: $statusText",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            settings.clearSavedFocusDistances()
+                            settings.lastFocusWindowStartMs = 0L
+                            focusMode = -1
+                            focusMode = 2
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(stringResource(R.string.focus_remeasure))
+                    }
+                }
             }
         }
 

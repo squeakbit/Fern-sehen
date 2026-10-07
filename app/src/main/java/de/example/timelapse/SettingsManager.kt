@@ -95,7 +95,32 @@ class SettingsManager(context: Context) {
         set(v) = p.edit().putInt("jpeg_quality", v.coerceIn(1, 100)).apply()
     var focusMode: Int
         get() = p.getInt("focus_mode", 0)
-        set(v) = p.edit().putInt("focus_mode", v).apply()
+        set(v) {
+            p.edit().putInt("focus_mode", v).apply()
+            clearSavedFocusDistances()
+            lastFocusWindowStartMs = 0L
+        }
+    fun getSavedFocusDistance(cameraId: String): Float? {
+        if (!p.contains("saved_focus_dist_$cameraId")) return null
+        val v = p.getFloat("saved_focus_dist_$cameraId", -1f)
+        return if (v >= 0f) v else null
+    }
+    fun setSavedFocusDistance(cameraId: String, distance: Float) {
+        p.edit().putFloat("saved_focus_dist_$cameraId", distance.coerceAtLeast(0f)).apply()
+    }
+    fun clearSavedFocusDistances() {
+        val editor = p.edit()
+        val keys = HashSet(p.all.keys)
+        for (k in keys) {
+            if (k.startsWith("saved_focus_dist_")) {
+                editor.remove(k)
+            }
+        }
+        editor.apply()
+    }
+    var lastFocusWindowStartMs: Long
+        get() = p.getLong("last_focus_window_start_ms", 0L)
+        set(v) = p.edit().putLong("last_focus_window_start_ms", v).apply()
     var smbUploadEnabled: Boolean
         get() = p.getBoolean("smb_upload_enabled", true)
         set(v) = p.edit().putBoolean("smb_upload_enabled", v).apply()

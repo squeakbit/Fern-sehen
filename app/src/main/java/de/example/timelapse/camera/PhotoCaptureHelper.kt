@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import de.example.timelapse.SettingsManager
+import de.example.timelapse.TimeWindowUtils
 import de.example.timelapse.data.AppDatabase
 import de.example.timelapse.data.PhotoEntity
 import kotlinx.coroutines.Dispatchers
@@ -44,7 +45,22 @@ object PhotoCaptureHelper {
         val camera = Camera2Capture(context)
         val temp = File.createTempFile("preview-", ".jpg", context.cacheDir)
         try {
-            if (camera.capture(cameraId, previewSize.width, previewSize.height, 80, temp, settings.focusMode)) temp else null
+            val savedDist = if (settings.focusMode == 2) settings.getSavedFocusDistance(cameraId) else null
+            val ok = camera.capture(
+                cameraId = cameraId,
+                width = previewSize.width,
+                height = previewSize.height,
+                jpegQuality = 80,
+                outFile = temp,
+                focusMode = settings.focusMode,
+                savedFocusDistance = savedDist,
+                onFocusDistanceMeasured = { dist ->
+                    if (settings.focusMode == 2) {
+                        settings.setSavedFocusDistance(cameraId, dist)
+                    }
+                }
+            )
+            if (ok) temp else null
         } catch (_: Throwable) {
             temp.delete()
             null
@@ -147,9 +163,38 @@ object PhotoCaptureHelper {
         // Single-use per capture - must be closed afterwards or its
         // background thread leaks for the rest of the process lifetime.
         val settings = SettingsManager(context)
+
+        if (settings.focusMode == 2) {
+            if (settings.timeWindowEnabled) {
+                val windowInfo = TimeWindowUtils.getTimeWindowInfo(settings)
+                if (settings.lastFocusWindowStartMs != windowInfo.windowStartMs) {
+                    settings.clearSavedFocusDistances()
+                    settings.lastFocusWindowStartMs = windowInfo.windowStartMs
+                }
+            } else {
+                if (settings.lastFocusWindowStartMs == 0L) {
+                    settings.lastFocusWindowStartMs = System.currentTimeMillis()
+                }
+            }
+        }
+
+        val savedDist = if (settings.focusMode == 2) settings.getSavedFocusDistance(cameraId) else null
         val camera = Camera2Capture(context)
         try {
-            camera.capture(cameraId, width, height, jpegQuality, temp, settings.focusMode)
+            camera.capture(
+                cameraId = cameraId,
+                width = width,
+                height = height,
+                jpegQuality = jpegQuality,
+                outFile = temp,
+                focusMode = settings.focusMode,
+                savedFocusDistance = savedDist,
+                onFocusDistanceMeasured = { dist ->
+                    if (settings.focusMode == 2) {
+                        settings.setSavedFocusDistance(cameraId, dist)
+                    }
+                }
+            )
 
             val uri = if (Build.VERSION.SDK_INT >= 29) {
                 saveViaScopedStorage(context, temp, fileName, folderDate)
